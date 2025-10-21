@@ -1,0 +1,1565 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { ChevronLeft, ChevronRight, Play, Settings, Mic, Volume2, VolumeX, Pause, StopCircle, Home, BookOpen, BarChart3, Plus, Search, TrendingUp, Clock, Award, Target, BookMarked, Edit2, Trash2, FolderOpen, CheckCircle } from 'lucide-react';
+
+export default function SpeechMemorizer() {
+  // Navigation
+  const [screen, setScreen] = useState('dashboard');
+  const [selectedPath, setSelectedPath] = useState(null);
+  const [selectedTopic, setSelectedTopic] = useState(null);
+  const [selectedTrack, setSelectedTrack] = useState(null);
+  
+  // Learning state
+  const [learningMode, setLearningMode] = useState('additive');
+  const [windowSize, setWindowSize] = useState(3);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [checkInterval, setCheckInterval] = useState(20);
+  const [showCheck, setShowCheck] = useState(false);
+  const [wordsMemorized, setWordsMemorized] = useState(0);
+  
+  // Audio states
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+  const [ttsSpeed, setTtsSpeed] = useState(1);
+  const [autoAdvance, setAutoAdvance] = useState(false);
+  const [autoPlayMode, setAutoPlayMode] = useState(false);
+  const [repeatPauseDuration, setRepeatPauseDuration] = useState(3);
+  const [isPausing, setIsPausing] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordings, setRecordings] = useState({});
+  
+  // Data structures
+  const [learningPaths, setLearningPaths] = useState(() => {
+    const saved = localStorage.getItem('speechMemorizer_paths');
+    return saved ? JSON.parse(saved) : [
+      {
+        id: 'path1',
+        name: 'US History Speeches',
+        color: 'indigo',
+        topics: [
+          {
+            id: 'topic1',
+            name: 'Civil War Era',
+            tracks: [
+              {
+                id: 'track1',
+                name: 'Gettysburg Address',
+                content: 'Four score and seven years ago our fathers brought forth on this continent a new nation conceived in liberty and dedicated to the proposition that all men are created equal',
+                language: 'en-US',
+                completed: false,
+                progress: { additive: 0, sliding: 0 },
+                timeSpent: 0,
+                lastAccessed: null,
+                timesAccessed: 0
+              }
+            ]
+          }
+        ]
+      }
+    ];
+  });
+  
+  const [userStats, setUserStats] = useState(() => {
+    const saved = localStorage.getItem('speechMemorizer_stats');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return {
+        ...parsed,
+        uniqueWords: new Set(parsed.uniqueWordsArray || [])
+      };
+    }
+    return {
+      lifetimeHours: 0,
+      totalTracks: 1,
+      completedTracks: 0,
+      currentStreak: 0,
+      longestStreak: 0,
+      totalWords: 0,
+      uniqueWords: new Set(),
+      activityHistory: []
+    };
+  });
+  
+  const [vocabSearch, setVocabSearch] = useState('');
+  const [newPathName, setNewPathName] = useState('');
+  const [newTopicName, setNewTopicName] = useState('');
+  const [newTrackName, setNewTrackName] = useState('');
+  const [newTrackContent, setNewTrackContent] = useState('');
+  const [newTrackLanguage, setNewTrackLanguage] = useState('en-US');
+  const [languageFilter, setLanguageFilter] = useState('all');
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  
+  // ElevenLabs TTS settings
+  const [elevenLabsApiKey, setElevenLabsApiKey] = useState(() => {
+    return localStorage.getItem('elevenLabsApiKey') || '';
+  });
+  const [elevenLabsVoiceId, setElevenLabsVoiceId] = useState('21m00Tcm4TlvDq8ikWAM'); // Default Rachel voice
+  const [useElevenLabs, setUseElevenLabs] = useState(false);
+  const [generatingAudio, setGeneratingAudio] = useState(false);
+  const [audioCache, setAudioCache] = useState(() => {
+    const saved = localStorage.getItem('speechMemorizer_audioCache');
+    return saved ? JSON.parse(saved) : {};
+  });
+  const [lastCompletedSentence, setLastCompletedSentence] = useState(-1);
+  const [playingSentence, setPlayingSentence] = useState(false);
+  
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+  const utteranceRef = useRef(null);
+  const sessionStartRef = useRef(null);
+
+  // Language options
+  const languages = [
+    { code: 'en-US', name: 'English (US)', flag: '🇺🇸' },
+    { code: 'en-GB', name: 'English (UK)', flag: '🇬🇧' },
+    { code: 'fi-FI', name: 'Finnish', flag: '🇫🇮' },
+    { code: 'nb-NO', name: 'Norwegian (Bokmål)', flag: '🇳🇴' },
+    { code: 'nn-NO', name: 'Norwegian (Nynorsk)', flag: '🇳🇴' },
+    { code: 'sv-SE', name: 'Swedish', flag: '🇸🇪' },
+    { code: 'da-DK', name: 'Danish', flag: '🇩🇰' },
+    { code: 'de-DE', name: 'German', flag: '🇩🇪' },
+    { code: 'fr-FR', name: 'French', flag: '🇫🇷' },
+    { code: 'es-ES', name: 'Spanish', flag: '🇪🇸' },
+    { code: 'it-IT', name: 'Italian', flag: '🇮🇹' },
+    { code: 'pt-PT', name: 'Portuguese', flag: '🇵🇹' },
+    { code: 'nl-NL', name: 'Dutch', flag: '🇳🇱' },
+    { code: 'pl-PL', name: 'Polish', flag: '🇵🇱' },
+    { code: 'cs-CZ', name: 'Czech', flag: '🇨🇿' },
+    { code: 'ja-JP', name: 'Japanese', flag: '🇯🇵' },
+    { code: 'ko-KR', name: 'Korean', flag: '🇰🇷' },
+  ];
+
+  const getLanguageName = (code) => {
+    const lang = languages.find(l => l.code === code);
+    return lang ? `${lang.flag} ${lang.name}` : code;
+  };
+
+  // Parse text into sentences
+  const parseSentences = (text) => {
+    return text.match(/[^.!?]+[.!?]+/g) || [text];
+  };
+
+  // Extract unique words from text
+  const extractUniqueWords = (text) => {
+    const words = text.toLowerCase().split(/\s+/);
+    return [...new Set(words.map(w => w.replace(/[^a-z]/g, '')).filter(w => w))];
+  };
+
+  // Generate audio using ElevenLabs
+  const generateElevenLabsAudio = async (text, isWord = false) => {
+    if (!elevenLabsApiKey) {
+      alert('Please add your ElevenLabs API key in settings!');
+      return null;
+    }
+
+    try {
+      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenLabsVoiceId}`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'audio/mpeg',
+          'Content-Type': 'application/json',
+          'xi-api-key': elevenLabsApiKey
+        },
+        body: JSON.stringify({
+          text: text,
+          model_id: 'eleven_monolingual_v1',
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.5
+          }
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('ElevenLabs API error');
+      }
+
+      const audioBlob = await response.blob();
+      return URL.createObjectURL(audioBlob);
+    } catch (error) {
+      console.error('Error generating audio:', error);
+      alert('Error generating audio. Check your API key and try again.');
+      return null;
+    }
+  };
+
+  // Cache audio for a track
+  const cacheTrackAudio = async (track) => {
+    if (!useElevenLabs || !elevenLabsApiKey) return;
+
+    setGeneratingAudio(true);
+    const trackCacheKey = `track_${track.id}`;
+    
+    // Check if already cached
+    if (audioCache[trackCacheKey]) {
+      setGeneratingAudio(false);
+      return;
+    }
+
+    const sentences = parseSentences(track.content);
+    const uniqueWords = extractUniqueWords(track.content);
+    
+    const newCache = {
+      sentences: {},
+      words: {}
+    };
+
+    // Generate sentence audio
+    for (let i = 0; i < sentences.length; i++) {
+      const audioUrl = await generateElevenLabsAudio(sentences[i].trim(), false);
+      if (audioUrl) {
+        newCache.sentences[`sentence_${i}`] = audioUrl;
+      }
+    }
+
+    // Generate word audio
+    for (const word of uniqueWords) {
+      const audioUrl = await generateElevenLabsAudio(word, true);
+      if (audioUrl) {
+        newCache.words[word] = audioUrl;
+      }
+    }
+
+    // Save to cache
+    const updatedCache = { ...audioCache, [trackCacheKey]: newCache };
+    setAudioCache(updatedCache);
+    localStorage.setItem('speechMemorizer_audioCache', JSON.stringify(updatedCache));
+    setGeneratingAudio(false);
+    
+    alert('Audio cached successfully! Ready for premium TTS learning.');
+  };
+
+  // Get current sentence index based on word index
+  const getCurrentSentenceIndex = () => {
+    if (!selectedTrack) return -1;
+    
+    const sentences = parseSentences(selectedTrack.content);
+    const words = selectedTrack.content.split(/\s+/);
+    let wordCount = 0;
+    
+    for (let i = 0; i < sentences.length; i++) {
+      const sentenceWords = sentences[i].split(/\s+/).length;
+      wordCount += sentenceWords;
+      if (currentIndex < wordCount) {
+        return i;
+      }
+    }
+    return sentences.length - 1;
+  };
+
+  // Check if we just completed a sentence
+  const checkSentenceCompletion = () => {
+    if (!selectedTrack || !useElevenLabs) return;
+    
+    const currentSentence = getCurrentSentenceIndex();
+    const words = selectedTrack.content.split(/\s+/);
+    const currentWord = words[currentIndex];
+    
+    // Check if current word ends with sentence terminator
+    if (currentWord && /[.!?]$/.test(currentWord) && currentSentence > lastCompletedSentence) {
+      setLastCompletedSentence(currentSentence);
+      playCachedSentence(currentSentence);
+    }
+  };
+
+  // Play cached sentence audio
+  const playCachedSentence = async (sentenceIndex) => {
+    if (!selectedTrack || !useElevenLabs) return;
+    
+    const trackCacheKey = `track_${selectedTrack.id}`;
+    const sentenceKey = `sentence_${sentenceIndex}`;
+    
+    if (audioCache[trackCacheKey]?.sentences[sentenceKey]) {
+      setPlayingSentence(true);
+      const audio = new Audio(audioCache[trackCacheKey].sentences[sentenceKey]);
+      audio.onended = () => {
+        setPlayingSentence(false);
+      };
+      await audio.play();
+    }
+  };
+
+  // Play word-by-word using cached audio
+  const playWordByWord = async () => {
+    if (!selectedTrack || !useElevenLabs) return;
+    
+    const trackCacheKey = `track_${selectedTrack.id}`;
+    const words = selectedTrack.content.split(/\s+/);
+    const wordsToPlay = learningMode === 'additive' 
+      ? words.slice(0, currentIndex + 1)
+      : words.slice(Math.max(0, currentIndex - windowSize + 1), currentIndex + 1);
+    
+    for (const word of wordsToPlay) {
+      const cleanWord = word.toLowerCase().replace(/[^a-z]/g, '');
+      if (audioCache[trackCacheKey]?.words[cleanWord]) {
+        const audio = new Audio(audioCache[trackCacheKey].words[cleanWord]);
+        await audio.play();
+        await new Promise(resolve => setTimeout(resolve, 100)); // Small pause between words
+      }
+    }
+  };
+
+  // Auto-save to localStorage
+  useEffect(() => {
+    localStorage.setItem('speechMemorizer_paths', JSON.stringify(learningPaths));
+  }, [learningPaths]);
+
+  useEffect(() => {
+    const statsToSave = {
+      ...userStats,
+      uniqueWordsArray: Array.from(userStats.uniqueWords)
+    };
+    localStorage.setItem('speechMemorizer_stats', JSON.stringify(statsToSave));
+  }, [userStats]);
+
+  // Export/Import functions
+  const exportData = () => {
+    const dataToExport = {
+      learningPaths,
+      userStats: {
+        ...userStats,
+        uniqueWordsArray: Array.from(userStats.uniqueWords)
+      },
+      exportDate: new Date().toISOString(),
+      version: '1.0'
+    };
+    
+    const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `speech-memorizer-backup-${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setShowExportMenu(false);
+  };
+
+  const importData = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const imported = JSON.parse(e.target.result);
+        
+        if (imported.learningPaths) {
+          setLearningPaths(imported.learningPaths);
+        }
+        
+        if (imported.userStats) {
+          setUserStats({
+            ...imported.userStats,
+            uniqueWords: new Set(imported.userStats.uniqueWordsArray || [])
+          });
+        }
+        
+        alert('Data imported successfully!');
+        setShowExportMenu(false);
+      } catch (err) {
+        alert('Error importing data. Please check the file format.');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const clearAllData = () => {
+    if (confirm('Are you sure you want to clear ALL data? This cannot be undone!')) {
+      localStorage.removeItem('speechMemorizer_paths');
+      localStorage.removeItem('speechMemorizer_stats');
+      window.location.reload();
+    }
+  };
+
+  // Get all words for vocab
+  const getAllWords = () => {
+    const wordMap = new Map();
+    learningPaths.forEach(path => {
+      path.topics.forEach(topic => {
+        topic.tracks.forEach(track => {
+          const words = track.content.toLowerCase().split(/\s+/);
+          words.forEach(word => {
+            const cleaned = word.replace(/[^a-z]/g, '');
+            if (cleaned) {
+              if (!wordMap.has(cleaned)) {
+                wordMap.set(cleaned, { word: cleaned, count: 0, tracks: [] });
+              }
+              const entry = wordMap.get(cleaned);
+              entry.count++;
+              if (!entry.tracks.includes(track.name)) {
+                entry.tracks.push(track.name);
+              }
+            }
+          });
+        });
+      });
+    });
+    return Array.from(wordMap.values()).sort((a, b) => b.count - a.count);
+  };
+
+  const filteredVocab = getAllWords().filter(v => 
+    v.word.includes(vocabSearch.toLowerCase())
+  );
+
+  // Audio functions
+  const speakCurrentText = () => {
+    if (!selectedTrack) return;
+    
+    // Use ElevenLabs cached audio if available
+    if (useElevenLabs && audioCache[`track_${selectedTrack.id}`]) {
+      playWordByWord();
+      return;
+    }
+    
+    // Fallback to browser TTS
+    if (!('speechSynthesis' in window)) return;
+    
+    window.speechSynthesis.cancel();
+    const words = selectedTrack.content.split(/\s+/);
+    const text = learningMode === 'additive' 
+      ? words.slice(0, currentIndex + 1).join(' ')
+      : words.slice(Math.max(0, currentIndex - windowSize + 1), currentIndex + 1).join(' ');
+    
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = ttsSpeed;
+    utterance.lang = selectedTrack.language || 'en-US';
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      
+      if (autoPlayMode) {
+        setIsPausing(true);
+        setTimeout(() => {
+          setIsPausing(false);
+          if (currentIndex < words.length - 1) {
+            handleNext();
+          } else {
+            setAutoPlayMode(false);
+          }
+        }, repeatPauseDuration * 1000);
+      } else if (autoAdvance && currentIndex < words.length - 1) {
+        setTimeout(() => handleNext(), 500);
+      }
+    };
+    utteranceRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const toggleTTS = () => {
+    if (ttsEnabled) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      setAutoPlayMode(false);
+      setIsPausing(false);
+    }
+    setTtsEnabled(!ttsEnabled);
+  };
+
+  const toggleAutoPlay = () => {
+    const newMode = !autoPlayMode;
+    setAutoPlayMode(newMode);
+    
+    if (newMode) {
+      setTtsEnabled(true);
+      setIsPausing(false);
+      setTimeout(() => speakCurrentText(), 100);
+    } else {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      setIsPausing(false);
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        audioChunksRef.current.push(event.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const key = `${selectedTrack.id}_checkpoint_${Math.floor(currentIndex / checkInterval)}`;
+        setRecordings(prev => ({ ...prev, [key]: audioUrl }));
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (err) {
+      alert('Microphone access denied.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  // Learning functions
+  const startLearning = (track, mode = 'additive', resumeIndex = null) => {
+    setSelectedTrack(track);
+    setLearningMode(mode);
+    const startIndex = resumeIndex !== null ? resumeIndex : (mode === 'additive' ? 0 : windowSize - 1);
+    setCurrentIndex(startIndex);
+    setWordsMemorized(resumeIndex !== null ? resumeIndex + 1 : 0);
+    setShowCheck(false);
+    setLastCompletedSentence(-1);
+    setScreen('learning');
+    sessionStartRef.current = Date.now();
+    
+    updateTrackStats(track.id, 'timesAccessed', track.timesAccessed + 1);
+    updateTrackStats(track.id, 'lastAccessed', new Date().toISOString());
+    
+    // Check if audio needs to be cached
+    if (useElevenLabs && !audioCache[`track_${track.id}`]) {
+      if (confirm('This track needs audio generation. Generate now? (This will use your ElevenLabs credits)')) {
+        cacheTrackAudio(track);
+      }
+    }
+  };
+
+  const continueTrack = (track) => {
+    // Find the furthest progress point
+    const words = track.content.split(/\s+/);
+    const additiveProgress = track.progress.additive || 0;
+    const slidingProgress = track.progress.sliding || 0;
+    const maxProgress = Math.max(additiveProgress, slidingProgress);
+    const resumeIndex = Math.floor((maxProgress / 100) * words.length);
+    
+    // Start in sliding mode with auto-play enabled
+    setAutoPlayMode(true);
+    setTtsEnabled(true);
+    startLearning(track, 'sliding', resumeIndex);
+  };
+
+  const updateTrackStats = (trackId, field, value) => {
+    setLearningPaths(prev => prev.map(path => ({
+      ...path,
+      topics: path.topics.map(topic => ({
+        ...topic,
+        tracks: topic.tracks.map(track => 
+          track.id === trackId ? { ...track, [field]: value } : track
+        )
+      }))
+    })));
+  };
+
+  const handleNext = () => {
+    if (!selectedTrack) return;
+    const words = selectedTrack.content.split(/\s+/);
+    if (currentIndex < words.length - 1) {
+      setCurrentIndex(currentIndex + 1);
+      setWordsMemorized(Math.max(wordsMemorized, currentIndex + 2));
+      
+      const progress = ((currentIndex + 2) / words.length) * 100;
+      updateTrackStats(selectedTrack.id, 'progress', {
+        ...selectedTrack.progress,
+        [learningMode]: Math.max(selectedTrack.progress[learningMode] || 0, progress)
+      });
+      
+      // Check for sentence completion
+      setTimeout(() => checkSentenceCompletion(), 100);
+    }
+  };
+
+  const handlePrev = () => {
+    const minIndex = learningMode === 'additive' ? 0 : windowSize - 1;
+    if (currentIndex > minIndex) {
+      setCurrentIndex(currentIndex - 1);
+    }
+  };
+
+  const endSession = () => {
+    if (sessionStartRef.current && selectedTrack) {
+      const timeSpent = (Date.now() - sessionStartRef.current) / 1000 / 60;
+      updateTrackStats(selectedTrack.id, 'timeSpent', selectedTrack.timeSpent + timeSpent);
+      
+      setUserStats(prev => ({
+        ...prev,
+        lifetimeHours: prev.lifetimeHours + (timeSpent / 60),
+        activityHistory: [...prev.activityHistory, {
+          date: new Date().toISOString(),
+          trackId: selectedTrack.id,
+          duration: timeSpent
+        }]
+      }));
+    }
+    
+    window.speechSynthesis.cancel();
+    setScreen('library');
+    setSelectedTrack(null);
+  };
+
+  const createNewPath = () => {
+    if (!newPathName.trim()) return;
+    const newPath = {
+      id: `path${Date.now()}`,
+      name: newPathName,
+      color: 'blue',
+      topics: []
+    };
+    setLearningPaths([...learningPaths, newPath]);
+    setNewPathName('');
+    setScreen('library');
+  };
+
+  const createNewTopic = (pathId) => {
+    if (!newTopicName.trim()) return;
+    setLearningPaths(prev => prev.map(path => 
+      path.id === pathId 
+        ? {
+            ...path,
+            topics: [...path.topics, {
+              id: `topic${Date.now()}`,
+              name: newTopicName,
+              tracks: []
+            }]
+          }
+        : path
+    ));
+    setNewTopicName('');
+    setSelectedPath(null);
+    setScreen('library');
+  };
+
+  const createNewTrack = (pathId, topicId) => {
+    if (!newTrackName.trim() || !newTrackContent.trim()) return;
+    
+    const wordCount = newTrackContent.split(/\s+/).length;
+    
+    setLearningPaths(prev => prev.map(path => 
+      path.id === pathId
+        ? {
+            ...path,
+            topics: path.topics.map(topic =>
+              topic.id === topicId
+                ? {
+                    ...topic,
+                    tracks: [...topic.tracks, {
+                      id: `track${Date.now()}`,
+                      name: newTrackName,
+                      content: newTrackContent,
+                      language: newTrackLanguage,
+                      completed: false,
+                      progress: { additive: 0, sliding: 0 },
+                      timeSpent: 0,
+                      lastAccessed: null,
+                      timesAccessed: 0
+                    }]
+                  }
+                : topic
+            )
+          }
+        : path
+    ));
+    
+    setUserStats(prev => ({
+      ...prev,
+      totalTracks: prev.totalTracks + 1,
+      totalWords: prev.totalWords + wordCount
+    }));
+    
+    setNewTrackName('');
+    setNewTrackContent('');
+    setNewTrackLanguage('en-US');
+    setSelectedPath(null);
+    setSelectedTopic(null);
+    setScreen('library');
+  };
+
+  useEffect(() => {
+    if (ttsEnabled && screen === 'learning' && !showCheck && selectedTrack && !autoPlayMode) {
+      speakCurrentText();
+    }
+    return () => {
+      if (utteranceRef.current) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, [currentIndex, ttsEnabled, screen, showCheck]);
+
+  useEffect(() => {
+    if (autoPlayMode && screen === 'learning' && !showCheck && !isSpeaking && !isPausing) {
+      speakCurrentText();
+    }
+  }, [currentIndex, autoPlayMode, screen, showCheck, isSpeaking, isPausing]);
+
+  useEffect(() => {
+    if (screen === 'learning' && selectedTrack && (currentIndex + 1) % checkInterval === 0 && currentIndex > 0) {
+      setShowCheck(true);
+    }
+  }, [currentIndex, checkInterval, screen, selectedTrack]);
+
+  // Navigation Bar
+  const NavBar = () => (
+    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-4 py-3 flex justify-around items-center shadow-lg z-50">
+      <button
+        onClick={() => setScreen('dashboard')}
+        className={`flex flex-col items-center gap-1 ${screen === 'dashboard' ? 'text-indigo-600' : 'text-gray-500'}`}
+      >
+        <Home size={24} />
+        <span className="text-xs">Home</span>
+      </button>
+      <button
+        onClick={() => setScreen('library')}
+        className={`flex flex-col items-center gap-1 ${screen === 'library' ? 'text-indigo-600' : 'text-gray-500'}`}
+      >
+        <BookOpen size={24} />
+        <span className="text-xs">Library</span>
+      </button>
+      <button
+        onClick={() => setScreen('vocab')}
+        className={`flex flex-col items-center gap-1 ${screen === 'vocab' ? 'text-indigo-600' : 'text-gray-500'}`}
+      >
+        <BookMarked size={24} />
+        <span className="text-xs">Vocabulary</span>
+      </button>
+    </div>
+  );
+
+  // Dashboard Screen
+  if (screen === 'dashboard') {
+    const recentTracks = learningPaths
+      .flatMap(p => p.topics.flatMap(t => t.tracks))
+      .filter(t => t.lastAccessed)
+      .sort((a, b) => new Date(b.lastAccessed) - new Date(a.lastAccessed))
+      .slice(0, 5);
+
+    const pathTimeData = learningPaths.map(path => ({
+      name: path.name,
+      time: path.topics.flatMap(t => t.tracks).reduce((sum, track) => sum + track.timeSpent, 0)
+    }));
+
+    const totalWords = learningPaths.flatMap(p => p.topics.flatMap(t => t.tracks))
+      .reduce((sum, track) => sum + track.content.split(/\s+/).length, 0);
+
+    const completedCount = learningPaths.flatMap(p => p.topics.flatMap(t => t.tracks))
+      .filter(t => t.completed).length;
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-50 pb-20">
+        <div className="max-w-6xl mx-auto p-6">
+          <div className="flex justify-between items-start mb-8">
+            <div>
+              <h1 className="text-4xl font-bold text-indigo-900 mb-2">Dashboard</h1>
+              <p className="text-indigo-600">Your learning journey at a glance</p>
+            </div>
+            <button
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              className="flex items-center gap-2 bg-white px-4 py-2 rounded-xl shadow hover:shadow-md transition-shadow text-gray-700"
+            >
+              <Settings size={20} />
+              Data
+            </button>
+          </div>
+
+          {showExportMenu && (
+            <div className="bg-white rounded-2xl shadow-lg p-6 mb-6 border-2 border-indigo-200">
+              <h3 className="text-lg font-bold text-gray-900 mb-4">Data Management</h3>
+              <div className="space-y-3">
+                <button
+                  onClick={exportData}
+                  className="w-full bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 transition-colors"
+                >
+                  📥 Export Backup (Download)
+                </button>
+                <label className="block w-full bg-green-600 text-white py-3 rounded-xl font-semibold hover:bg-green-700 transition-colors text-center cursor-pointer">
+                  📤 Import Backup
+                  <input
+                    type="file"
+                    accept=".json"
+                    onChange={importData}
+                    className="hidden"
+                  />
+                </label>
+                <button
+                  onClick={clearAllData}
+                  className="w-full bg-red-600 text-white py-3 rounded-xl font-semibold hover:bg-red-700 transition-colors"
+                >
+                  🗑️ Clear All Data
+                </button>
+                
+                <div className="border-t-2 border-gray-200 pt-4 mt-4">
+                  <h4 className="font-semibold text-gray-900 mb-3">🎵 ElevenLabs Premium TTS</h4>
+                  <label className="block text-sm text-gray-700 mb-2">API Key</label>
+                  <input
+                    type="password"
+                    value={elevenLabsApiKey}
+                    onChange={(e) => {
+                      setElevenLabsApiKey(e.target.value);
+                      localStorage.setItem('elevenLabsApiKey', e.target.value);
+                    }}
+                    placeholder="Enter your ElevenLabs API key"
+                    className="w-full p-3 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:outline-none mb-3"
+                  />
+                  <label className="flex items-center justify-between mb-2">
+                    <span className="text-gray-700">Use ElevenLabs TTS</span>
+                    <input
+                      type="checkbox"
+                      checked={useElevenLabs}
+                      onChange={(e) => setUseElevenLabs(e.target.checked)}
+                      className="w-5 h-5"
+                    />
+                  </label>
+                  <p className="text-xs text-gray-600">
+                    Premium TTS with word-level caching & natural sentence flow injection
+                  </p>
+                </div>
+                
+                <p className="text-xs text-gray-600 text-center mt-2">
+                  💾 Data auto-saves in your browser. Export for backups & device transfers.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Hero Stats */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+            <div className="bg-white rounded-2xl p-6 shadow-lg">
+              <div className="flex items-center gap-3 mb-2">
+                <Clock className="text-indigo-600" size={24} />
+                <span className="text-sm text-gray-600">Lifetime Hours</span>
+              </div>
+              <div className="text-3xl font-bold text-gray-900">{userStats.lifetimeHours.toFixed(1)}</div>
+            </div>
+
+            <div className="bg-white rounded-2xl p-6 shadow-lg">
+              <div className="flex items-center gap-3 mb-2">
+                <Target className="text-green-600" size={24} />
+                <span className="text-sm text-gray-600">Tracks Completed</span>
+              </div>
+              <div className="text-3xl font-bold text-gray-900">{completedCount}</div>
+            </div>
+
+            <div className="bg-white rounded-2xl p-6 shadow-lg">
+              <div className="flex items-center gap-3 mb-2">
+                <TrendingUp className="text-purple-600" size={24} />
+                <span className="text-sm text-gray-600">Current Streak</span>
+              </div>
+              <div className="text-3xl font-bold text-gray-900">{userStats.currentStreak} days</div>
+            </div>
+
+            <div className="bg-white rounded-2xl p-6 shadow-lg">
+              <div className="flex items-center gap-3 mb-2">
+                <BookMarked className="text-amber-600" size={24} />
+                <span className="text-sm text-gray-600">Total Words</span>
+              </div>
+              <div className="text-3xl font-bold text-gray-900">{totalWords.toLocaleString()}</div>
+            </div>
+          </div>
+
+          {/* Recent Activity */}
+          <div className="bg-white rounded-2xl p-6 shadow-lg mb-8">
+            <h2 className="text-xl font-bold text-gray-900 mb-4">Recent Tracks</h2>
+            {recentTracks.length === 0 ? (
+              <p className="text-gray-500 text-center py-8">No recent activity. Start learning!</p>
+            ) : (
+              <div className="space-y-3">
+                {recentTracks.map(track => {
+                  const maxProgress = Math.max(track.progress.additive || 0, track.progress.sliding || 0);
+                  return (
+                    <div key={track.id} className="border border-gray-200 rounded-xl p-4">
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <h3 className="font-semibold text-gray-900">{track.name}</h3>
+                          <p className="text-sm text-gray-500">Last: {new Date(track.lastAccessed).toLocaleDateString()}</p>
+                        </div>
+                        <span className="text-sm font-medium text-indigo-600">{maxProgress.toFixed(0)}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div
+                          className="bg-indigo-600 h-2 rounded-full transition-all"
+                          style={{ width: `${maxProgress}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Learning Path Distribution */}
+          <div className="bg-white rounded-2xl p-6 shadow-lg">
+            <h2 className="text-xl font-bold text-gray-900 mb-4">Time by Learning Path</h2>
+            <div className="space-y-3">
+              {pathTimeData.map((path, i) => {
+                const total = pathTimeData.reduce((sum, p) => sum + p.time, 0);
+                const percentage = total > 0 ? (path.time / total) * 100 : 0;
+                return (
+                  <div key={i}>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span className="text-gray-700">{path.name}</span>
+                      <span className="text-gray-500">{path.time.toFixed(1)}m</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-3">
+                      <div
+                        className="bg-gradient-to-r from-indigo-500 to-purple-500 h-3 rounded-full"
+                        style={{ width: `${percentage}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+        <NavBar />
+      </div>
+    );
+  }
+
+  // Library Screen
+  if (screen === 'library') {
+    const filteredPaths = learningPaths.map(path => ({
+      ...path,
+      topics: path.topics.map(topic => ({
+        ...topic,
+        tracks: topic.tracks.filter(track => 
+          languageFilter === 'all' || track.language === languageFilter
+        )
+      })).filter(topic => topic.tracks.length > 0)
+    })).filter(path => path.topics.length > 0 || languageFilter === 'all');
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-50 pb-20">
+        <div className="max-w-6xl mx-auto p-6">
+          <div className="flex justify-between items-center mb-6">
+            <div>
+              <h1 className="text-4xl font-bold text-indigo-900 mb-2">Library</h1>
+              <p className="text-indigo-600">Organize your learning content</p>
+            </div>
+            <button
+              onClick={() => setScreen('createPath')}
+              className="flex items-center gap-2 bg-indigo-600 text-white px-6 py-3 rounded-xl hover:bg-indigo-700 transition-colors"
+            >
+              <Plus size={20} />
+              New Path
+            </button>
+          </div>
+
+          {/* Language Filter */}
+          <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
+            <label className="text-sm font-semibold text-gray-700 mb-2 block">Filter by Language</label>
+            <select
+              value={languageFilter}
+              onChange={(e) => setLanguageFilter(e.target.value)}
+              className="w-full p-3 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:outline-none"
+            >
+              <option value="all">All Languages</option>
+              {languages.map(lang => (
+                <option key={lang.code} value={lang.code}>
+                  {lang.flag} {lang.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-6">
+            {learningPaths.map(path => (
+              <div key={path.id} className="bg-white rounded-2xl shadow-lg overflow-hidden">
+                <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 text-white">
+                  <h2 className="text-2xl font-bold mb-1">{path.name}</h2>
+                  <p className="text-indigo-100">{path.topics.length} topics • {path.topics.flatMap(t => t.tracks).length} tracks</p>
+                </div>
+                
+                <div className="p-6">
+                  {path.topics.length === 0 ? (
+                    <div className="text-center py-8 text-gray-500">
+                      <p className="mb-4">No topics yet. Add your first topic!</p>
+                    </div>
+                  ) : (
+                    path.topics.map(topic => {
+                      const visibleTracks = topic.tracks.filter(track => 
+                        languageFilter === 'all' || track.language === languageFilter
+                      );
+                      
+                      if (visibleTracks.length === 0 && languageFilter !== 'all') return null;
+                      
+                      return (
+                        <div key={topic.id} className="mb-6 last:mb-0">
+                          <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                            <FolderOpen size={20} className="text-indigo-600" />
+                            {topic.name}
+                          </h3>
+                          <div className="grid gap-3 ml-7">
+                            {visibleTracks.map(track => {
+                              const maxProgress = Math.max(track.progress.additive || 0, track.progress.sliding || 0);
+                              return (
+                                <div key={track.id} className="border-2 border-gray-200 rounded-xl p-4 hover:border-indigo-300 transition-colors">
+                                  <div className="flex justify-between items-start mb-3">
+                                    <div className="flex-1">
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <h4 className="font-semibold text-gray-900">{track.name}</h4>
+                                        <span className="text-xs px-2 py-1 bg-indigo-100 text-indigo-700 rounded-full">
+                                          {getLanguageName(track.language || 'en-US')}
+                                        </span>
+                                      </div>
+                                      <p className="text-sm text-gray-500 mt-1">
+                                        {track.content.split(/\s+/).length} words • {track.timeSpent.toFixed(1)}m practiced
+                                      </p>
+                                    </div>
+                                    {track.completed && (
+                                      <CheckCircle className="text-green-600" size={24} />
+                                    )}
+                                  </div>
+                                  <div className="w-full bg-gray-200 rounded-full h-2 mb-3">
+                                    <div
+                                      className="bg-indigo-600 h-2 rounded-full"
+                                      style={{ width: `${maxProgress}%` }}
+                                    />
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <button
+                                      onClick={() => startLearning(track, 'additive')}
+                                      className="flex-1 bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700 transition-colors text-sm font-medium"
+                                    >
+                                      Additive
+                                    </button>
+                                    <button
+                                      onClick={() => startLearning(track, 'sliding')}
+                                      className="flex-1 bg-purple-600 text-white py-2 rounded-lg hover:bg-purple-700 transition-colors text-sm font-medium"
+                                    >
+                                      Sliding
+                                    </button>
+                                    {useElevenLabs && (
+                                      <button
+                                        onClick={() => cacheTrackAudio(track)}
+                                        disabled={generatingAudio || audioCache[`track_${track.id}`]}
+                                        className="flex-1 bg-amber-600 text-white py-2 rounded-lg hover:bg-amber-700 transition-colors text-sm font-medium disabled:opacity-50"
+                                      >
+                                        {audioCache[`track_${track.id}`] ? '✓ Cached' : '🎵 Cache'}
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            <button
+                              onClick={() => {
+                                setSelectedPath(path.id);
+                                setSelectedTopic(topic.id);
+                                setScreen('createTrack');
+                              }}
+                              className="border-2 border-dashed border-gray-300 rounded-xl p-4 text-gray-500 hover:border-indigo-400 hover:text-indigo-600 transition-colors flex items-center justify-center gap-2"
+                            >
+                              <Plus size={20} />
+                              Add Track
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                  <button
+                    onClick={() => {
+                      setSelectedPath(path.id);
+                      setScreen('createTopic');
+                    }}
+                    className="w-full mt-4 border-2 border-dashed border-gray-300 rounded-xl p-4 text-gray-500 hover:border-indigo-400 hover:text-indigo-600 transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Plus size={20} />
+                    Add Topic
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <NavBar />
+      </div>
+    );
+  }
+
+  // Vocabulary Screen
+  if (screen === 'vocab') {
+    const uniqueWordCount = getAllWords().length;
+    const totalWordCount = learningPaths.flatMap(p => p.topics.flatMap(t => t.tracks))
+      .reduce((sum, track) => sum + track.content.split(/\s+/).length, 0);
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-50 pb-20">
+        <div className="max-w-6xl mx-auto p-6">
+          <h1 className="text-4xl font-bold text-indigo-900 mb-2">Vocabulary</h1>
+          <p className="text-indigo-600 mb-8">Your personal word dictionary</p>
+
+          <div className="grid grid-cols-2 gap-4 mb-8">
+            <div className="bg-white rounded-2xl p-6 shadow-lg">
+              <div className="text-sm text-gray-600 mb-1">Unique Words</div>
+              <div className="text-4xl font-bold text-indigo-900">{uniqueWordCount}</div>
+            </div>
+            <div className="bg-white rounded-2xl p-6 shadow-lg">
+              <div className="text-sm text-gray-600 mb-1">Total Word Count</div>
+              <div className="text-4xl font-bold text-purple-900">{totalWordCount}</div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-6 shadow-lg mb-6">
+            <div className="relative">
+              <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400" size={20} />
+              <input
+                type="text"
+                value={vocabSearch}
+                onChange={(e) => setVocabSearch(e.target.value)}
+                placeholder="Search your vocabulary..."
+                className="w-full pl-12 pr-4 py-3 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl p-6 shadow-lg">
+            <h2 className="text-xl font-bold text-gray-900 mb-4">Word Dictionary</h2>
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {filteredVocab.slice(0, 100).map((vocab, i) => (
+                <div key={i} className="flex justify-between items-center p-3 border border-gray-200 rounded-lg hover:bg-indigo-50 transition-colors">
+                  <div className="flex-1">
+                    <span className="font-semibold text-gray-900">{vocab.word}</span>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Found in: {vocab.tracks.slice(0, 2).join(', ')}
+                      {vocab.tracks.length > 2 && ` +${vocab.tracks.length - 2} more`}
+                    </p>
+                  </div>
+                  <span className="text-sm font-medium text-indigo-600 ml-4">×{vocab.count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <NavBar />
+      </div>
+    );
+  }
+
+  // Create Path Screen
+  if (screen === 'createPath') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-50 pb-20">
+        <div className="max-w-2xl mx-auto p-6">
+          <h1 className="text-4xl font-bold text-indigo-900 mb-8">Create Learning Path</h1>
+          
+          <div className="bg-white rounded-2xl p-6 shadow-lg">
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Path Name</label>
+            <input
+              type="text"
+              value={newPathName}
+              onChange={(e) => setNewPathName(e.target.value)}
+              placeholder="e.g., US History Speeches, Philosophy Texts..."
+              className="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:outline-none mb-6"
+            />
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => setScreen('library')}
+                className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-xl font-semibold hover:bg-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={createNewPath}
+                className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 transition-colors"
+              >
+                Create Path
+              </button>
+            </div>
+          </div>
+        </div>
+        <NavBar />
+      </div>
+    );
+  }
+
+  // Create Topic Screen
+  if (screen === 'createTopic') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-50 pb-20">
+        <div className="max-w-2xl mx-auto p-6">
+          <h1 className="text-4xl font-bold text-indigo-900 mb-8">Create New Topic</h1>
+          
+          <div className="bg-white rounded-2xl p-6 shadow-lg">
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Topic Name</label>
+            <input
+              type="text"
+              value={newTopicName}
+              onChange={(e) => setNewTopicName(e.target.value)}
+              placeholder="e.g., Civil War Era, Modern Philosophy..."
+              className="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:outline-none mb-6"
+            />
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setSelectedPath(null);
+                  setNewTopicName('');
+                  setScreen('library');
+                }}
+                className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-xl font-semibold hover:bg-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (selectedPath) {
+                    createNewTopic(selectedPath);
+                  }
+                }}
+                className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 transition-colors"
+              >
+                Create Topic
+              </button>
+            </div>
+          </div>
+        </div>
+        <NavBar />
+      </div>
+    );
+  }
+
+  // Create Track Screen
+  if (screen === 'createTrack') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-50 pb-20">
+        <div className="max-w-2xl mx-auto p-6">
+          <h1 className="text-4xl font-bold text-indigo-900 mb-8">Create New Track</h1>
+          
+          <div className="bg-white rounded-2xl p-6 shadow-lg">
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Track Name</label>
+            <input
+              type="text"
+              value={newTrackName}
+              onChange={(e) => setNewTrackName(e.target.value)}
+              placeholder="e.g., Gettysburg Address, Chapter 1..."
+              className="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:outline-none mb-6"
+            />
+            
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Language</label>
+            <select
+              value={newTrackLanguage}
+              onChange={(e) => setNewTrackLanguage(e.target.value)}
+              className="w-full p-4 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:outline-none mb-6"
+            >
+              {languages.map(lang => (
+                <option key={lang.code} value={lang.code}>
+                  {lang.flag} {lang.name}
+                </option>
+              ))}
+            </select>
+            
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Content</label>
+            <textarea
+              value={newTrackContent}
+              onChange={(e) => setNewTrackContent(e.target.value)}
+              placeholder="Paste your speech, article, or text here..."
+              className="w-full h-64 p-4 border-2 border-gray-200 rounded-xl focus:border-indigo-500 focus:outline-none resize-none mb-2"
+            />
+            <p className="text-sm text-gray-500 mb-6">
+              {newTrackContent.split(/\s+/).filter(w => w).length} words
+            </p>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setSelectedPath(null);
+                  setSelectedTopic(null);
+                  setNewTrackName('');
+                  setNewTrackContent('');
+                  setNewTrackLanguage('en-US');
+                  setScreen('library');
+                }}
+                className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-xl font-semibold hover:bg-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (selectedPath && selectedTopic) {
+                    createNewTrack(selectedPath, selectedTopic);
+                  }
+                }}
+                className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-semibold hover:bg-indigo-700 transition-colors"
+              >
+                Create Track
+              </button>
+            </div>
+          </div>
+        </div>
+        <NavBar />
+      </div>
+    );
+  }
+
+  // Learning Session - Knowledge Check
+  if (screen === 'learning' && showCheck) {
+    if (!selectedTrack) {
+      setScreen('library');
+      return null;
+    }
+
+    const words = selectedTrack.content.split(/\s+/);
+    const currentCheckpoint = Math.floor(currentIndex / checkInterval);
+    const hasRecording = recordings[`${selectedTrack.id}_checkpoint_${currentCheckpoint}`];
+
+    const getDisplayText = () => {
+      if (learningMode === 'additive') {
+        return words.slice(0, currentIndex + 1).join(' ');
+      } else {
+        const start = Math.max(0, currentIndex - windowSize + 1);
+        const prefix = start > 0 ? '...' : '';
+        return prefix + words.slice(start, currentIndex + 1).join(' ');
+      }
+    };
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50 p-4 flex items-center justify-center">
+        <div className="max-w-2xl w-full bg-white rounded-2xl shadow-lg p-8">
+          <h2 className="text-3xl font-bold text-amber-900 mb-4">Knowledge Check!</h2>
+          <p className="text-lg text-gray-700 mb-6">
+            Mentally or verbally recall what you've learned so far. Record yourself to check later!
+          </p>
+          
+          <div className="bg-amber-50 border-2 border-amber-200 rounded-xl p-6 mb-6">
+            <p className="text-sm text-amber-800 font-medium mb-2">Progress so far:</p>
+            <p className="text-gray-600 italic">{getDisplayText()}</p>
+          </div>
+
+          <div className="flex gap-4 mb-6">
+            {!isRecording ? (
+              <button
+                onClick={startRecording}
+                className="flex-1 bg-red-600 text-white py-4 rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-red-700 transition-colors"
+              >
+                <Mic size={24} />
+                Record Yourself
+              </button>
+            ) : (
+              <button
+                onClick={stopRecording}
+                className="flex-1 bg-red-700 text-white py-4 rounded-xl font-semibold flex items-center justify-center gap-2 animate-pulse"
+              >
+                <StopCircle size={24} />
+                Stop Recording
+              </button>
+            )}
+            
+            {hasRecording && (
+              <button
+                onClick={() => {
+                  const audio = new Audio(recordings[`${selectedTrack.id}_checkpoint_${currentCheckpoint}`]);
+                  audio.play();
+                }}
+                className="flex-1 bg-indigo-600 text-white py-4 rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-indigo-700 transition-colors"
+              >
+                <Play size={24} />
+                Play Recording
+              </button>
+            )}
+          </div>
+
+          <button
+            onClick={() => setShowCheck(false)}
+            className="w-full bg-amber-600 text-white py-4 rounded-xl font-semibold text-lg hover:bg-amber-700 transition-colors"
+          >
+            Continue Learning
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Learning Session - Main
+  if (screen === 'learning') {
+    if (!selectedTrack) {
+      setScreen('library');
+      return null;
+    }
+
+    const words = selectedTrack.content.split(/\s+/);
+    const progress = (wordsMemorized / words.length) * 100;
+    const currentCheckpoint = Math.floor(currentIndex / checkInterval);
+    const hasRecording = recordings[`${selectedTrack.id}_checkpoint_${currentCheckpoint}`];
+
+    const getDisplayText = () => {
+      if (learningMode === 'additive') {
+        return words.slice(0, currentIndex + 1).join(' ');
+      } else {
+        const start = Math.max(0, currentIndex - windowSize + 1);
+        const prefix = start > 0 ? '...' : '';
+        return prefix + words.slice(start, currentIndex + 1).join(' ');
+      }
+    };
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-50 p-4">
+        <div className="max-w-4xl mx-auto pt-8 pb-20">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h1 className="text-2xl font-bold text-indigo-900">{selectedTrack.name}</h1>
+              <div className="flex items-center gap-2">
+                <p className="text-sm text-indigo-600">
+                  {learningMode === 'additive' ? 'Additive Layering' : `Sliding Window (${windowSize} words)`}
+                </p>
+                <span className="text-xs px-2 py-1 bg-indigo-100 text-indigo-700 rounded-full">
+                  {getLanguageName(selectedTrack.language || 'en-US')}
+                </span>
+              </div>
+            </div>
+            <button
+              onClick={endSession}
+              className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg shadow hover:shadow-md transition-shadow text-gray-700"
+            >
+              <Home size={20} />
+              End
+            </button>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-lg p-8 mb-6">
+            <div className="mb-6">
+              <div className="flex justify-between text-sm text-gray-600 mb-2">
+                <span>Progress</span>
+                <span>{wordsMemorized} / {words.length} words</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-3">
+                <div
+                  className="bg-indigo-600 h-3 rounded-full transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            </div>
+
+            <div className="min-h-64 flex items-center justify-center p-8 bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl mb-6 relative">
+              {isPausing && (
+                <div className="absolute top-4 right-4 bg-amber-500 text-white px-4 py-2 rounded-lg font-semibold animate-pulse">
+                  ⏸️ Repeat now!
+                </div>
+              )}
+              {isSpeaking && (
+                <div className="absolute top-4 right-4 bg-indigo-500 text-white px-4 py-2 rounded-lg font-semibold">
+                  🔊 Speaking...
+                </div>
+              )}
+              {playingSentence && (
+                <div className="absolute top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg font-semibold animate-pulse">
+                  🎵 Full Sentence!
+                </div>
+              )}
+              {generatingAudio && (
+                <div className="absolute top-4 left-4 bg-purple-500 text-white px-4 py-2 rounded-lg font-semibold">
+                  ⏳ Generating audio...
+                </div>
+              )}
+              <p className="text-3xl md:text-4xl font-serif text-gray-800 text-center leading-relaxed">
+                {getDisplayText()}
+              </p>
+            </div>
+
+            <div className="flex items-center justify-center gap-3 mb-6">
+              {autoPlayMode ? (
+                <button
+                  onClick={toggleAutoPlay}
+                  className="flex items-center gap-2 px-6 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
+                >
+                  <Pause size={20} />
+                  Stop Auto-Play
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={toggleTTS}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                      ttsEnabled 
+                        ? 'bg-indigo-600 text-white hover:bg-indigo-700' 
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    {ttsEnabled ? <Volume2 size={20} /> : <VolumeX size={20} />}
+                    {isSpeaking ? 'Speaking...' : 'TTS'}
+                  </button>
+
+                  <button
+                    onClick={toggleAutoPlay}
+                    className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors"
+                  >
+                    <Play size={20} />
+                    Auto-Play
+                  </button>
+                </>
+              )}
+
+              {!isRecording ? (
+                <button
+                  onClick={startRecording}
+                  className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
+                >
+                  <Mic size={20} />
+                  Record
+                </button>
+              ) : (
+                <button
+                  onClick={stopRecording}
+                  className="flex items-center gap-2 px-4 py-2 bg-red-700 text-white rounded-lg font-medium animate-pulse"
+                >
+                  <StopCircle size={20} />
+                  Stop
+                </button>
+              )}
+
+              {hasRecording && (
+                <button
+                  onClick={() => {
+                    const audio = new Audio(recordings[`${selectedTrack.id}_checkpoint_${currentCheckpoint}`]);
+                    audio.play();
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors"
+                >
+                  <Play size={20} />
+                  Play
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center justify-center gap-4">
+              <button
+                onClick={handlePrev}
+                disabled={currentIndex <= (learningMode === 'additive' ? 0 : windowSize - 1)}
+                className="flex items-center justify-center w-16 h-16 bg-indigo-100 rounded-full hover:bg-indigo-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <ChevronLeft size={32} className="text-indigo-700" />
+              </button>
+
+              <div className="text-center px-8">
+                <div className="text-sm text-gray-500 mb-1">Word</div>
+                <div className="text-2xl font-bold text-indigo-900">
+                  {currentIndex + 1} / {words.length}
+                </div>
+              </div>
+
+              <button
+                onClick={handleNext}
+                disabled={currentIndex >= words.length - 1}
+                className="flex items-center justify-center w-16 h-16 bg-indigo-600 rounded-full hover:bg-indigo-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <ChevronRight size={32} className="text-white" />
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl shadow p-4 text-center text-sm text-gray-600">
+            <p>💡 {useElevenLabs && audioCache[`track_${selectedTrack?.id}`] 
+              ? 'Premium TTS active! Full sentences play automatically at sentence endings 🎵' 
+              : 'Try Auto-Play mode for hands-free practice with automatic repeat pauses!'}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
